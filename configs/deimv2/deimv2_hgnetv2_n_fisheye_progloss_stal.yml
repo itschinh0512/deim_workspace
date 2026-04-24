@@ -1,0 +1,13 @@
+__include__: [
+  './deimv2_hgnetv2_n_fisheye.yml'
+]
+
+output_dir: ./outputs/deimv2_hgnetv2_n_fisheye_progloss_stal_try3
+
+DEIMCriterion:
+  prog_loss_enabled: False
+
+  matcher:
+    stal_enabled: True
+    stal_min_size: 0.015
+    stal_cost_bonus: 2.0

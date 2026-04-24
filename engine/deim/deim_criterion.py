@@ -20,6 +20,23 @@ from ..misc.dist_utils import get_world_size, is_dist_available_and_initialized
 from ..core import register
 
 
+class ProgLossScheduler:
+    """Linearly interpolate criterion loss weights over training epochs."""
+
+    def __init__(self, total_epochs, weight_dict_init, weight_dict_final):
+        self.total_epochs = max(int(total_epochs), 1)
+        self.weight_dict_init = copy.deepcopy(weight_dict_init)
+        self.weight_dict_final = copy.deepcopy(weight_dict_final)
+
+    def get_weights(self, epoch):
+        progress = min(max(float(epoch), 0.0) / max(self.total_epochs - 1, 1), 1.0)
+        weights = copy.deepcopy(self.weight_dict_init)
+        for key, init_weight in self.weight_dict_init.items():
+            final_weight = self.weight_dict_final.get(key, init_weight)
+            weights[key] = init_weight + (final_weight - init_weight) * progress
+        return weights
+
+
 @register()
 class DEIMCriterion(nn.Module):
     """ This class computes the loss for DEIM.
@@ -39,6 +56,9 @@ class DEIMCriterion(nn.Module):
         share_matched_indices=False,
         mal_alpha=None,
         use_uni_set=True,
+        prog_loss_enabled=False,
+        total_epochs=1,
+        weight_dict_final=None,
         ):
         """Create the criterion.
         Parameters:
@@ -64,6 +84,14 @@ class DEIMCriterion(nn.Module):
         self.num_pos, self.num_neg = None, None
         self.mal_alpha = mal_alpha
         self.use_uni_set = use_uni_set
+        self.prog_loss_enabled = prog_loss_enabled
+        self.total_epochs = total_epochs
+        self.weight_dict_final = copy.deepcopy(weight_dict if weight_dict_final is None else weight_dict_final)
+        self.prog_scheduler = ProgLossScheduler(
+            total_epochs=self.total_epochs,
+            weight_dict_init=self.weight_dict,
+            weight_dict_final=self.weight_dict_final,
+        ) if self.prog_loss_enabled else None
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert 'pred_logits' in outputs
@@ -271,6 +299,7 @@ class DEIMCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if 'aux' not in k}
+        active_weight_dict = self.prog_scheduler.get_weights(epoch) if self.prog_scheduler is not None else self.weight_dict
 
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets, epoch=epoch)['indices']
@@ -315,7 +344,7 @@ class DEIMCriterion(nn.Module):
             num_boxes_in = num_boxes_go if use_uni_set else num_boxes
             meta = self.get_loss_meta_info(loss, outputs, targets, indices_in)
             l_dict = self.get_loss(loss, outputs, targets, indices_in, num_boxes_in, **meta)
-            l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
+            l_dict = {k: l_dict[k] * active_weight_dict[k] for k in l_dict if k in active_weight_dict}
             losses.update(l_dict)
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
@@ -330,7 +359,7 @@ class DEIMCriterion(nn.Module):
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_in)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices_in, num_boxes_in, **meta)
 
-                    l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
+                    l_dict = {k: l_dict[k] * active_weight_dict[k] for k in l_dict if k in active_weight_dict}
                     l_dict = {k + f'_aux_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -344,7 +373,7 @@ class DEIMCriterion(nn.Module):
                 meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_in)
                 l_dict = self.get_loss(loss, aux_outputs, targets, indices_in, num_boxes_in, **meta)
 
-                l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
+                l_dict = {k: l_dict[k] * active_weight_dict[k] for k in l_dict if k in active_weight_dict}
                 l_dict = {k + '_pre': v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
@@ -368,7 +397,7 @@ class DEIMCriterion(nn.Module):
                     num_boxes_in = num_boxes_go if use_uni_set else num_boxes
                     meta = self.get_loss_meta_info(loss, aux_outputs, enc_targets, indices_in)
                     l_dict = self.get_loss(loss, aux_outputs, enc_targets, indices_in, num_boxes_in, **meta)
-                    l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
+                    l_dict = {k: l_dict[k] * active_weight_dict[k] for k in l_dict if k in active_weight_dict}
                     l_dict = {k + f'_enc_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -388,7 +417,7 @@ class DEIMCriterion(nn.Module):
                 for loss in self.losses:
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_dn)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices_dn, dn_num_boxes, **meta)
-                    l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
+                    l_dict = {k: l_dict[k] * active_weight_dict[k] for k in l_dict if k in active_weight_dict}
                     l_dict = {k + f'_dn_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -398,7 +427,7 @@ class DEIMCriterion(nn.Module):
                 for loss in self.losses:
                     meta = self.get_loss_meta_info(loss, aux_outputs, targets, indices_dn)
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices_dn, dn_num_boxes, **meta)
-                    l_dict = {k: l_dict[k] * self.weight_dict[k] for k in l_dict if k in self.weight_dict}
+                    l_dict = {k: l_dict[k] * active_weight_dict[k] for k in l_dict if k in active_weight_dict}
                     l_dict = {k + '_dn_pre': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 

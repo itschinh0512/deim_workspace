@@ -30,7 +30,8 @@ class HungarianMatcher(nn.Module):
     __share__ = ['use_focal_loss', ]
 
     def __init__(self, weight_dict, use_focal_loss=False, alpha=0.25, gamma=2.0,
-                change_matcher=False, iou_order_alpha=1.0, matcher_change_epoch=10000):
+                change_matcher=False, iou_order_alpha=1.0, matcher_change_epoch=10000,
+                stal_enabled=False, stal_min_size=0.015, stal_cost_bonus=2.0):
         """Creates the matcher
 
         Params:
@@ -48,6 +49,11 @@ class HungarianMatcher(nn.Module):
         self.matcher_change_epoch = matcher_change_epoch
         if self.change_matcher:
             print(f"Using the new matching cost with iou_order_alpha = {iou_order_alpha} at epoch {matcher_change_epoch}")
+        self.stal_enabled = stal_enabled
+        self.stal_min_size = stal_min_size
+        self.stal_cost_bonus = stal_cost_bonus
+        if self.stal_enabled:
+            print(f"Using STAL cost bonus with min_size = {stal_min_size} and cost_bonus = {stal_cost_bonus}")
 
         self.use_focal_loss = use_focal_loss
         self.alpha = alpha
@@ -120,15 +126,27 @@ class HungarianMatcher(nn.Module):
             # Final cost matrix 3 * self.cost_bbox + 2 * self.cost_class + self.cost_giou
             C = self.cost_bbox * cost_bbox + self.cost_class * cost_class + self.cost_giou * cost_giou
 
-        C = C.view(bs, num_queries, -1).cpu()
-
         sizes = [len(v["boxes"]) for v in targets]
-        C = torch.nan_to_num(C, nan=1.0)
-        indices_pre = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
+        C = torch.nan_to_num(C.view(bs, num_queries, -1), nan=1.0).cpu()
+        C_splits = list(C.split(sizes, -1))
+
+        if self.stal_enabled and len(sizes) > 0:
+            for batch_idx, (size, c_split) in enumerate(zip(sizes, C_splits)):
+                if size == 0:
+                    continue
+                tgt_bbox_batch = targets[batch_idx]["boxes"].detach().cpu()
+                is_small = (tgt_bbox_batch[:, 2:] < self.stal_min_size).any(dim=1)
+                if is_small.any():
+                    small_bonus = torch.zeros(size, dtype=c_split.dtype)
+                    small_bonus[is_small] = self.stal_cost_bonus
+                    c_split[batch_idx] = c_split[batch_idx] - small_bonus.unsqueeze(0)
+
+        indices_pre = [linear_sum_assignment(c[i]) for i, c in enumerate(C_splits)]
         indices = [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices_pre]
 
         # Compute topk indices
         if return_topk:
+            C = torch.cat(C_splits, dim=-1) if len(C_splits) > 0 else C
             return {'indices_o2m': self.get_top_k_matches(C, sizes=sizes, k=return_topk, initial_indices=indices_pre)}
 
         return {'indices': indices} # , 'indices_o2m': C.min(-1)[1]}
