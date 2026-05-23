@@ -1,0 +1,17 @@
+# ============================================================
+# Strategy 4, Experiment Z2: Moderate zone weighting (alpha=1.0)
+# Expected: Edge GT gets up to 2× weight
+# ============================================================
+__include__: ['../deimv2_hgnetv2_n_fisheye.yml']
+
+output_dir: ./outputs/ohem_s4_Z2_zone_a1.0
+
+DEIMCriterion:
+  gamma: 2.0
+  zone_weight_enabled: True
+  zone_alpha: 1.0            # edge GT gets up to 2× weight
+  zone_beta: 2.0             # quadratic ramp
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 136

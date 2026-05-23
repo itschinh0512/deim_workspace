@@ -1,0 +1,18 @@
+# ============================================================
+# Strategy 1, Experiment O2: OHEM with higher neg ratio
+# Expected: Keeping more negatives = less aggressive mining
+# ============================================================
+__include__: ['../deimv2_hgnetv2_n_fisheye.yml']
+
+output_dir: ./outputs/ohem_s1_O2_ohem_neg5.0
+
+DEIMCriterion:
+  gamma: 2.0
+  ohem_enabled: True
+  ohem_neg_ratio: 5.0        # keep 5× positives negatives (less aggressive)
+  ohem_min_neg: 16
+  ohem_warmup_epochs: 10
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 136

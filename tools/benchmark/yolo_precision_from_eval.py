@@ -155,8 +155,8 @@ def compute_yolo_style_metrics(eval_dict: Dict[str, Any], iou: float, area: str,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", type=str, default="configs/deimv2/deimv2_hgnetv2_n_fisheye.yml")
-    parser.add_argument("-r", "--resume", type=str, default="outputs/deimv2_hgnetv2_n_fisheye/best_stg1.pth")
+    parser.add_argument("-c", "--config", type=str, default="configs/deimv2/deimv2_hgnetv2_n_fisheye_progloss_stal.yml")
+    parser.add_argument("-r", "--resume", type=str, default="outputs/deimv2_hgnetv2_n_fisheye_progloss_stal_try3/best_stg1.pth")
     parser.add_argument("-d", "--device", type=str, default=None, help="e.g. cuda:0 or cpu")
     parser.add_argument("--seed", type=int, default=0)
 

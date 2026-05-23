@@ -1,0 +1,19 @@
+# ============================================================
+# Strategy 2, Experiment B4: Best gamma + progressive loss
+# Expected: Progressive difficulty ramp-up over training
+# Run this AFTER determining best gamma from B1/B2/B3.
+# Currently set to gamma=2.0 — update if B2 or B3 is better.
+# ============================================================
+__include__: ['../deimv2_hgnetv2_n_fisheye.yml']
+
+output_dir: ./outputs/ohem_s2_B4_gamma2.0_progloss
+
+DEIMCriterion:
+  gamma: 2.0
+  prog_loss_enabled: True
+  total_epochs: 160
+  weight_dict_final: {loss_mal: 1.5, loss_bbox: 5, loss_giou: 2, loss_fgl: 0.25, loss_ddf: 1.5}
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 136

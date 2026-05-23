@@ -1,0 +1,17 @@
+# ============================================================
+# Strategy 4, Experiment Z3: Strong zone weighting (alpha=2.0, beta=3.0)
+# Expected: Edge GT gets up to 3× weight with cubic ramp
+# ============================================================
+__include__: ['../deimv2_hgnetv2_n_fisheye.yml']
+
+output_dir: ./outputs/ohem_s4_Z3_zone_a2.0_b3.0
+
+DEIMCriterion:
+  gamma: 2.0
+  zone_weight_enabled: True
+  zone_alpha: 2.0            # edge GT gets up to 3× weight
+  zone_beta: 3.0             # cubic ramp (sharper transition)
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 136

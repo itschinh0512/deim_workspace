@@ -1,12 +1,12 @@
 __include__: [
-  '../dataset/fisheye_detection.yml',
+  '../dataset/fisheye_detection_holdout.yml',
   '../runtime.yml',
   '../base/dataloader.yml',
   '../base/optimizer.yml',
   '../base/deimv2.yml'
 ]
 
-output_dir: ./outputs/deimv2_hgnetv2_n_fisheye_newrun
+output_dir: ./outputs/deimv2_hgnetv2_n_fisheye_holdout
 eval_spatial_size: [640, 640]
 
 HGNetv2:
@@ -20,12 +20,10 @@ HybridEncoder:
   in_channels: [512, 1024]
   feat_strides: [16, 32]
 
-  # intra
   hidden_dim: 128
   use_encoder_idx: [1]
   dim_feedforward: 512
 
-  # cross
   expansion: 0.34
   depth_mult: 0.5
 
@@ -41,7 +39,6 @@ DEIMTransformer:
   num_layers: 3
   eval_idx: -1
 
-  # FFN
   dim_feedforward: 512
 
 optimizer:
@@ -62,22 +59,17 @@ optimizer:
   betas: [0.9, 0.999]
   weight_decay: 0.0001
 
-# Increase to search for the optimal ema
-epoches: 160 # 148 + 12
-
-## Our LR-Scheduler
-flat_epoch: 7800    # 4 + epoch // 2, e.g., 40 = 4 + 72 / 2
+epoches: 160
+flat_epoch: 7800
 no_aug_epoch: 12
 lr_gamma: 1.0
 
-## Our DataAug
 train_dataloader:
   total_batch_size: 16
   dataset:
     transforms:
       ops:
-        - {type: Mosaic, output_size: 640, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5],
-           probability: 1.0, fill_value: 0, use_cache: True, max_cached_images: 50, random_pop: True}
+        - {type: Mosaic, output_size: 512, rotation_range: 10, translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5], probability: 1.0, fill_value: 0, use_cache: True, max_cached_images: 50, random_pop: True}
         - {type: RandomPhotometricDistort, p: 0.5}
         - {type: RandomZoomOut, fill: 0}
         - {type: RandomIoUCrop, p: 0.8}
@@ -88,7 +80,7 @@ train_dataloader:
         - {type: ConvertPILImage, dtype: 'float32', scale: True}
         - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
       policy:
-        epoch: [4, 78, 148]   # list
+        epoch: [4, 78, 148]
 
   collate_fn:
     base_size: 640
@@ -97,7 +89,7 @@ train_dataloader:
     mixup_epochs: [4, 78]
     stop_epoch: 148
     copyblend_prob: 0.4
-    copyblend_epochs: [4, 78]   # CP half
+    copyblend_epochs: [4, 78]
     area_threshold: 100
     num_objects: 3
     with_expand: True
@@ -113,7 +105,6 @@ val_dataloader:
 
 DEIMCriterion:
   matcher:
-    # new matcher
     change_matcher: True
     iou_order_alpha: 4.0
     matcher_change_epoch: 136

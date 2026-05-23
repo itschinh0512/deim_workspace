@@ -1,0 +1,133 @@
+__include__: [
+  '../dataset/normal_detection.yml',
+  '../runtime.yml',
+  '../base/dataloader.yml',
+  '../base/optimizer.yml',
+  '../base/deimv2.yml'
+]
+
+output_dir: ./outputs/deimv2_hgnetv2_s_normal
+eval_spatial_size: [640, 640]
+
+# ──────────────────────────────────────────────
+# DEIMv2-S backbone: HGNetv2-B0, 3 feature scales
+# (vs. DEIMv2-N which uses only the last 2 scales)
+# ──────────────────────────────────────────────
+HGNetv2:
+  name: 'B0'
+  return_idx: [1, 2, 3]          # S: 3 scales (P3/8, P4/16, P5/32)
+  freeze_at: -1
+  freeze_norm: False
+  use_lab: True
+  local_model_dir: /home/locth/omni2rect_DEIM/deim_workspace/weight/hgnetv2/
+
+HybridEncoder:
+  in_channels: [256, 512, 1024]  # S: 3 channels from the 3 selected stages
+  feat_strides: [8, 16, 32]
+
+  # intra-scale transformer
+  hidden_dim: 256                 # S: wider hidden dim (128 in N)
+  use_encoder_idx: [2]            # encode the P5/32 level
+  dim_feedforward: 1024
+
+  # cross-scale
+  expansion: 0.5
+  depth_mult: 0.34
+
+  version: 'dfine'
+
+DEIMTransformer:
+  feat_channels: [256, 256, 256]
+  feat_strides: [8, 16, 32]
+  hidden_dim: 256
+  num_levels: 3
+  num_points: [4, 4, 4]
+
+  num_layers: 3
+  eval_idx: -1
+
+  # FFN
+  dim_feedforward: 1024
+
+# ──────────────────────────────────────────────
+# Optimizer  (slightly lower LR than N given larger model)
+# ──────────────────────────────────────────────
+optimizer:
+  type: AdamW
+  params:
+    -
+      params: '^(?=.*backbone)(?!.*norm|bn).*$'
+      lr: 0.0002
+    -
+      params: '^(?=.*backbone)(?=.*norm|bn).*$'
+      lr: 0.0002
+      weight_decay: 0.
+    -
+      params: '^(?=.*(?:encoder|decoder))(?=.*(?:norm|bn|bias)).*$'
+      weight_decay: 0.
+
+  lr: 0.0004
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+
+# ──────────────────────────────────────────────
+# LR schedule  (follows COCO-S recipe scaled for dataset size)
+# ──────────────────────────────────────────────
+epoches: 132        # 120 warm/train + 12 no-aug fine-tune
+flat_epoch: 64      # flat top before cosine decay (= 4 + epoch//2)
+no_aug_epoch: 12
+lr_gamma: 1.0
+
+# ──────────────────────────────────────────────
+# Data augmentation
+# ──────────────────────────────────────────────
+train_dataloader:
+  total_batch_size: 8
+  dataset:
+    transforms:
+      ops:
+        - {type: Mosaic, output_size: 640, rotation_range: 10,
+           translation_range: [0.1, 0.1], scaling_range: [0.5, 1.5],
+           probability: 1.0, fill_value: 0, use_cache: True,
+           max_cached_images: 50, random_pop: True}
+        - {type: RandomPhotometricDistort, p: 0.5}
+        - {type: RandomZoomOut, fill: 0}
+        - {type: RandomIoUCrop, p: 0.8}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: RandomHorizontalFlip}
+        - {type: Resize, size: [640, 640]}
+        - {type: SanitizeBoundingBoxes, min_size: 1}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+        - {type: ConvertBoxes, fmt: 'cxcywh', normalize: True}
+      policy:
+        epoch: [4, 64, 120]   # switch aug policy at these epochs
+
+  collate_fn:
+    base_size: 640
+    ema_restart_decay: 0.9999
+    base_size_repeat: 20
+    mixup_epochs: [4, 64]
+    stop_epoch: 120
+    copyblend_prob: 0.5
+    copyblend_epochs: [4, 120]
+    area_threshold: 100
+    num_objects: 3
+    with_expand: True
+    expand_ratios: [0.1, 0.25]
+
+val_dataloader:
+  total_batch_size: 16
+  dataset:
+    transforms:
+      ops:
+        - {type: Resize, size: [640, 640]}
+        - {type: ConvertPILImage, dtype: 'float32', scale: True}
+
+# ──────────────────────────────────────────────
+# Criterion / matcher  (same as S-COCO baseline)
+# ──────────────────────────────────────────────
+DEIMCriterion:
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 100   # = epoches - 32 (≈ flat_epoch + no_aug_epoch * 3)

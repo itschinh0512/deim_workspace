@@ -1,0 +1,18 @@
+# ============================================================
+# Strategy 1, Experiment O3: OHEM with longer warmup
+# Expected: More stable early training before OHEM kicks in
+# ============================================================
+__include__: ['../deimv2_hgnetv2_n_fisheye.yml']
+
+output_dir: ./outputs/ohem_s1_O3_ohem_warmup20
+
+DEIMCriterion:
+  gamma: 2.0
+  ohem_enabled: True
+  ohem_neg_ratio: 3.0
+  ohem_min_neg: 16
+  ohem_warmup_epochs: 20     # delayed OHEM activation
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 136

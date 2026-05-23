@@ -1,0 +1,17 @@
+# ============================================================
+# Strategy 4, Experiment Z1: Mild zone weighting (alpha=0.5)
+# Expected: Slight focus boost on edge-distorted plates
+# ============================================================
+__include__: ['../deimv2_hgnetv2_n_fisheye.yml']
+
+output_dir: ./outputs/ohem_s4_Z1_zone_a0.5
+
+DEIMCriterion:
+  gamma: 2.0
+  zone_weight_enabled: True
+  zone_alpha: 0.5            # edge GT gets up to 1.5× weight
+  zone_beta: 2.0             # quadratic ramp
+  matcher:
+    change_matcher: True
+    iou_order_alpha: 4.0
+    matcher_change_epoch: 136

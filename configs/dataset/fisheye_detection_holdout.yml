@@ -12,7 +12,7 @@ train_dataloader:
   dataset:
     type: CocoDetection
     img_folder: /home/locth/omni2rect_DEIM/dataset_fisheye/images/train
-    ann_file: /home/locth/omni2rect_DEIM/dataset_fisheye/annotations/instances_train.json
+    ann_file: /home/locth/omni2rect_DEIM/dataset_fisheye/annotations/splits/instances_train_split.json
     return_masks: False
     transforms:
       type: Compose
@@ -28,8 +28,8 @@ val_dataloader:
   type: DataLoader
   dataset:
     type: CocoDetection
-    img_folder: /home/locth/omni2rect_DEIM/dataset_fisheye/images/val
-    ann_file: /home/locth/omni2rect_DEIM/dataset_fisheye/annotations/instances_val.json
+    img_folder: /home/locth/omni2rect_DEIM/dataset_fisheye/images/train
+    ann_file: /home/locth/omni2rect_DEIM/dataset_fisheye/annotations/splits/instances_val_split.json
     return_masks: False
     transforms:
       type: Compose

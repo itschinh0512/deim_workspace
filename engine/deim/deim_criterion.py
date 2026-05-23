@@ -59,6 +59,15 @@ class DEIMCriterion(nn.Module):
         prog_loss_enabled=False,
         total_epochs=1,
         weight_dict_final=None,
+        # ---- OHEM: Query-level hard negative mining (Strategy 1) ----
+        ohem_enabled=False,
+        ohem_neg_ratio=3.0,
+        ohem_min_neg=16,
+        ohem_warmup_epochs=0,
+        # ---- Zone-aware weighting for fisheye (Strategy 4) ----
+        zone_weight_enabled=False,
+        zone_alpha=1.0,
+        zone_beta=2.0,
         ):
         """Create the criterion.
         Parameters:
@@ -68,6 +77,13 @@ class DEIMCriterion(nn.Module):
             num_classes: number of object categories, omitting the special no-object category.
             reg_max (int): Max number of the discrete bins in D-FINE.
             boxes_weight_format: format for boxes weight (iou, ).
+            ohem_enabled: enable OHEM hard negative mining on unmatched queries.
+            ohem_neg_ratio: ratio of negatives to positives to keep.
+            ohem_min_neg: minimum number of negatives to keep per image.
+            ohem_warmup_epochs: disable OHEM for first N epochs.
+            zone_weight_enabled: enable radial zone weighting for fisheye images.
+            zone_alpha: max extra weight at image edge (weight = 1 + alpha at corners).
+            zone_beta: controls how fast weight increases with radial distance.
         """
         super().__init__()
         self.num_classes = num_classes
@@ -92,6 +108,22 @@ class DEIMCriterion(nn.Module):
             weight_dict_init=self.weight_dict,
             weight_dict_final=self.weight_dict_final,
         ) if self.prog_loss_enabled else None
+
+        # OHEM configuration (Strategy 1)
+        self.ohem_enabled = ohem_enabled
+        self.ohem_neg_ratio = ohem_neg_ratio
+        self.ohem_min_neg = ohem_min_neg
+        self.ohem_warmup_epochs = ohem_warmup_epochs
+        self._current_epoch = 0  # updated each forward pass
+        if self.ohem_enabled:
+            print(f"     ### OHEM enabled: neg_ratio={ohem_neg_ratio}, min_neg={ohem_min_neg}, warmup={ohem_warmup_epochs} ###")
+
+        # Zone-aware weighting configuration (Strategy 4)
+        self.zone_weight_enabled = zone_weight_enabled
+        self.zone_alpha = zone_alpha
+        self.zone_beta = zone_beta
+        if self.zone_weight_enabled:
+            print(f"     ### Zone weighting enabled: alpha={zone_alpha}, beta={zone_beta} ###")
 
     def loss_labels_focal(self, outputs, targets, indices, num_boxes):
         assert 'pred_logits' in outputs
@@ -170,6 +202,97 @@ class DEIMCriterion(nn.Module):
         loss = loss.mean(1).sum() * src_logits.shape[1] / num_boxes
         return {'loss_mal': loss}
 
+    def loss_labels_mal_ohem(self, outputs, targets, indices, num_boxes, values=None):
+        """MAL loss with OHEM-style hard negative mining on unmatched queries.
+        Selects only the top-K hardest negative queries by their loss value,
+        where K = max(num_positives * ohem_neg_ratio, ohem_min_neg).
+        """
+        assert 'pred_boxes' in outputs
+        idx = self._get_src_permutation_idx(indices)
+
+        # --- Standard MAL computation (same as loss_labels_mal) ---
+        if values is None:
+            src_boxes = outputs['pred_boxes'][idx]
+            target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+            ious, _ = box_iou(box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy(target_boxes))
+            ious = torch.diag(ious).detach()
+        else:
+            ious = values
+
+        src_logits = outputs['pred_logits']  # [B, num_queries, num_classes]
+        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+        target_classes = torch.full(src_logits.shape[:2], self.num_classes,
+                                    dtype=torch.int64, device=src_logits.device)
+        target_classes[idx] = target_classes_o
+        target = F.one_hot(target_classes, num_classes=self.num_classes + 1)[..., :-1]
+
+        target_score_o = torch.zeros_like(target_classes, dtype=src_logits.dtype)
+        target_score_o[idx] = ious.to(target_score_o.dtype)
+        target_score = target_score_o.unsqueeze(-1) * target
+
+        pred_score = F.sigmoid(src_logits).detach()
+        target_score = target_score.pow(self.gamma)
+        if self.mal_alpha is not None:
+            weight = self.mal_alpha * pred_score.pow(self.gamma) * (1 - target) + target
+        else:
+            weight = pred_score.pow(self.gamma) * (1 - target) + target
+
+        # --- Per-query loss (no reduction yet) ---
+        per_query_loss = F.binary_cross_entropy_with_logits(
+            src_logits, target_score, weight=weight, reduction='none'
+        )  # [B, num_queries, num_classes]
+        per_query_loss = per_query_loss.mean(dim=-1)  # [B, num_queries]
+
+        # --- OHEM: select hard negatives ---
+        if self._current_epoch >= self.ohem_warmup_epochs:
+            B, N = src_logits.shape[:2]
+            # Build positive mask
+            pos_mask = torch.zeros(B, N, dtype=torch.bool, device=src_logits.device)
+            pos_mask[idx] = True
+
+            total_loss = torch.tensor(0.0, device=src_logits.device)
+            for b in range(B):
+                pos_loss = per_query_loss[b][pos_mask[b]]
+                neg_losses = per_query_loss[b][~pos_mask[b]]
+
+                num_pos = max(pos_mask[b].sum().item(), 1)
+                num_neg_keep = max(int(num_pos * self.ohem_neg_ratio), self.ohem_min_neg)
+                num_neg_keep = min(num_neg_keep, neg_losses.numel())
+
+                # Select top-K hardest negatives
+                if num_neg_keep < neg_losses.numel():
+                    topk_neg, _ = torch.topk(neg_losses, num_neg_keep)
+                else:
+                    topk_neg = neg_losses
+
+                total_loss = total_loss + pos_loss.sum() + topk_neg.sum()
+
+            loss = total_loss * N / num_boxes  # scale to match original normalization
+        else:
+            # Fallback to standard MAL behavior during warmup
+            loss = per_query_loss.mean(1).sum() * src_logits.shape[1] / num_boxes
+
+        return {'loss_mal': loss}
+
+    def _compute_zone_weights(self, target_boxes):
+        """Compute per-box weights based on radial distance from image center.
+        Fisheye images have more distortion at edges, so GT boxes near edges
+        are inherently harder and should receive higher loss weight.
+
+        Args:
+            target_boxes: [N, 4] in cxcywh normalized format
+
+        Returns:
+            weights: [N] with values in [1.0, 1.0 + zone_alpha]
+        """
+        cx, cy = target_boxes[:, 0], target_boxes[:, 1]
+        # Radial distance from center (0.5, 0.5), normalized to [0, 1]
+        r = torch.sqrt((cx - 0.5) ** 2 + (cy - 0.5) ** 2)
+        r_max = 0.5 * (2 ** 0.5)  # max possible distance (corner)
+        r_norm = (r / r_max).clamp(0, 1)
+        weights = 1.0 + self.zone_alpha * r_norm.pow(self.zone_beta)
+        return weights.detach()
+
     def loss_boxes(self, outputs, targets, indices, num_boxes, boxes_weight=None):
         """Compute the losses related to the bounding boxes, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "boxes" containing a tensor of dim [nb_target_boxes, 4]
@@ -180,12 +303,20 @@ class DEIMCriterion(nn.Module):
         src_boxes = outputs['pred_boxes'][idx]
         target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
         losses = {}
+
+        # Zone-aware weighting for fisheye (Strategy 4)
+        zone_w = self._compute_zone_weights(target_boxes) if self.zone_weight_enabled else None
+
         loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none')
+        if zone_w is not None:
+            loss_bbox = loss_bbox * zone_w.unsqueeze(-1)  # [N, 4] * [N, 1]
         losses['loss_bbox'] = loss_bbox.sum() / num_boxes
 
         loss_giou = 1 - torch.diag(generalized_box_iou(\
             box_cxcywh_to_xyxy(src_boxes), box_cxcywh_to_xyxy(target_boxes)))
         loss_giou = loss_giou if boxes_weight is None else loss_giou * boxes_weight
+        if zone_w is not None:
+            loss_giou = loss_giou * zone_w
         losses['loss_giou'] = loss_giou.sum() / num_boxes
 
         return losses
@@ -285,7 +416,7 @@ class DEIMCriterion(nn.Module):
             'boxes': self.loss_boxes,
             'focal': self.loss_labels_focal,
             'vfl': self.loss_labels_vfl,
-            'mal': self.loss_labels_mal,
+            'mal': self.loss_labels_mal_ohem if self.ohem_enabled else self.loss_labels_mal,
             'local': self.loss_local,
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
@@ -294,12 +425,14 @@ class DEIMCriterion(nn.Module):
     def forward(self, outputs, targets, epoch=0, **kwargs):
         """ This performs the loss computation.
         Parameters:
+             epoch: current training epoch (used by OHEM for warmup scheduling)
              outputs: dict of tensors, see the output specification of the model for the format
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if 'aux' not in k}
         active_weight_dict = self.prog_scheduler.get_weights(epoch) if self.prog_scheduler is not None else self.weight_dict
+        self._current_epoch = epoch  # Store for OHEM warmup check
 
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets, epoch=epoch)['indices']

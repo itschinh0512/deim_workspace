@@ -1,2 +1,8 @@
+torch==2.5.1
+torchvision==0.20.1
+Pillow
+PyYAML
 onnxruntime
+tqdm
 tensorrt
+faster-coco-eval>=1.6.7

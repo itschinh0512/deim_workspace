@@ -3,6 +3,8 @@ outputs/
 ckpts/
 testenv/
 backup
+saved_predictions_view/
+tracking_outputs/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
